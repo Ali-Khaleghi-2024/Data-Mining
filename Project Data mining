@@ -1,0 +1,577 @@
+---
+title: "Project"
+---
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(leaps)
+library(tictoc)
+library(caret)
+library(parallelPlot)
+library(earth)
+library(vip)
+library(purrr)
+library(dplyr)
+library(broom)
+library(esquisse)
+library(stargazer)
+library(keras)
+library(mlr3)
+library(mlr3filters)
+library(data.table)
+library(writexl)
+library(flextable)
+```
+
+```{r}
+load("RawData.RData")
+```
+
+ادغام دیتاها و فیلتر کردن براساس سفرهای کاری و کلانشهری
+
+```{r}
+H <- HH
+h <- hh
+p <- per
+t <- trip
+v <- veh
+
+t <- t |> 
+  filter(WHYTRP1S == 10 , MSACAT != 4)
+# t |> names()
+# t |> count(MSACAT , sort = TRUE)
+tp_w <- merge(p , t , by = c("HOUSEID", "PERSONID"), all = TRUE)
+tph_w <- merge(tp_w, h, by = c("HOUSEID"), all = TRUE)
+tphv_w <- merge(tph_w , v , by = c("HOUSEID"), all = TRUE)
+df <- tphv_w 
+```
+
+```{r}
+save(df, file = "df.RData")
+```
+
+```{r}
+load("df.RData")
+```
+
+پاکسازی دیتا
+
+```{r}
+# حذف ردیف های تکراری
+df <- df %>% distinct()
+df <- df |> na.omit()
+# سفر های بدون ترافیک و سفرهای واقعی زمانشان را تصحیح میکنیم تا مقدار منفی یا صفر نداشته باشیم
+df <- df |> 
+  filter(TRVLCMIN > 0 , NOCONG > 0)
+```
+
+تفکیک گروه ها
+
+```{r}
+group_occupation <- function(occupation) {
+  if (occupation == 1) {
+    return('saler')
+  } else if (occupation == 2) {
+    return('clericaler')
+  } else if (occupation == 3) {
+    return('farmer')
+  } else {
+    return('professor')
+  }
+}
+
+# اعمال تابع به ستون مربوط به شغل (OCCAT)
+df$occupation_group <- sapply(df$OCCAT, group_occupation)
+
+# تفکیک داده‌ها بر اساس گروه‌بندی شغلی
+list_of_occupation_groups <- split(df, df$occupation_group)
+```
+
+تغییر نام مقدار بعضی ستون ها
+
+```{r}
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "1","$10,000 < ")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "2","$10,000 to $14,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "3","$15,000 to $24,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "4","$25,000 to $34,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "5","$35,000 to $49,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "6","$50,000 to $74,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "7","$75,000 to $99,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "8","$100,000 to $124,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "9","$125,000 to $149,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "10","$150,000 to $199,999")
+df$HHFAMINC.x <- replace(df$HHFAMINC.x, df$HHFAMINC.x == "11","$200,000 > ")
+df <- df |>
+  filter(HHFAMINC.x != "-7", HHFAMINC.x != "-8" , HHFAMINC.x != "-9")
+
+df$R_SEX.x <- replace(df$R_SEX.x, df$R_SEX.x == "1","male")
+df$R_SEX.x <- replace(df$R_SEX.x, df$R_SEX.x == "2","female")
+df <- df |>
+  filter(R_SEX.x != "-7", R_SEX.x != "-8")
+
+df$OCCAT <- replace(df$OCCAT, df$OCCAT == "1","saler")
+df$OCCAT <- replace(df$OCCAT, df$OCCAT == "2","clericaler")
+df$OCCAT <- replace(df$OCCAT, df$OCCAT == "3","farmer")
+df$OCCAT <- replace(df$OCCAT, df$OCCAT == "4","professor")
+df <- df |>
+  filter(OCCAT != "-8" ,OCCAT != "-9", OCCAT != "97")
+
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "1","Walk")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "2","Bicycle")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "3","Car")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "4","SUV")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "5","Van")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "6","Pickup truck")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "7","Golf cart / Segway")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "8","Motorcycle / Moped")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "9","RV (motor home, ATV, snowmobile)")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "10","School bus")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "11","Public or commuter bus ")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "12","Paratransit / Dial-a-ride")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "13","Private / Charter / Tour / Shuttle bus")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS== "14","City-to-city bus (Greyhound, Megabus)")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "15","Amtrak / Commuter rail ")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "16","Subway / Elevated / Light rail / Street car")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "17","Taxi / Limo (including Uber / Lyft) ")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "18","Rental car (including Zipcar / Car2Go) ")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "19","Airplane")
+df$WRKTRANS <- replace(df$WRKTRANS, df$WRKTRANS == "20","Boat / Ferry / Water taxi")
+```
+
+پیدا کردن پراهمیت ترین متغیرها و ضرایب هرکدام برای ساخت بالاترین دقت مدلسازی
+
+(feature engineering)
+
+```{r}
+selected_data <- df
+
+# Select all columns as predictors
+all_columns <- names(selected_data)
+
+# Convert character columns to factors
+selected_data <- selected_data %>%
+  mutate(across(where(is.character), as.factor))
+
+# Create a new data frame with all columns
+selected_data <- selected_data %>% 
+  select(all_of(all_columns))
+
+# Check for missing values in the selected data
+missing_values <- sum(is.na(selected_data))
+cat("Missing values in the selected data:", missing_values, "\n")
+
+# Drop rows with missing values
+selected_data <- na.omit(selected_data)
+
+# Define the mlr3 Task for regression
+tsk <- TaskRegr$new("example_task", backend = selected_data, target = "TRVLCMIN")
+
+# Use mlr3 filters for feature selection
+flt_gain <- flt("information_gain")
+flt_gain$calculate(tsk)
+feature_scores <- as.data.table(flt_gain)
+print(feature_scores)
+write_xlsx(feature_scores, "feature_scores.xlsx")
+```
+
+```{r}
+library(caret)  
+set.seed(123)  # Set seed for reproducibility
+trainIndex <- createDataPartition(df$TRVLCMIN, p = .8,  # Create a 80/20 split for training and testing
+                                  list = FALSE,
+                                  times = 1)
+data_train <- df[trainIndex, ]  # Training data
+data_test <- df[-trainIndex, ]  # Testing data
+ctrl <- trainControl(method = "repeatedcv",  # Define the cross-validation method
+                     number = 10,  # Number of folds
+                     repeats = 5)  # Repeated 5 times
+model <- train(TRVLCMIN ~ I(0.58357*TRPMILES) + I(0.58176*TRPMILAD) + I(0.53511*VMT_MILE) + I(0.3111*TIMETOWK) + I(0.23229*NOCONG) + I(0.2067*DISTTOWK17) + I(0.2067*GCDWORK) + I(0.20206*ENDTIME) + I(0.10891*STRTTIME),
+               data = data_train,  # Training data
+               method = "glmnet",  # Method for regression (e.g., "glmnet" for LASSO)
+               trControl = ctrl) 
+ # Use the defined control
+predictions <- predict(model, newdata = data_test)  # Make predictions
+varImp(model)  # Variable importance
+```
+
+```{r}
+modeling <- df
+set.seed(123)  # برای تکرارپذیری
+index <- createDataPartition(modeling$TRVLCMIN, p = 0.8, list = FALSE)
+train_data <- modeling[index, ]
+test_data <- modeling[-index, ]
+
+# تعریف کنترل آموزش (برای کراس-ولیدیشن و جلوگیری از اورفیت)
+train_control <- trainControl(method = "cv", number = 10)
+
+# انتخاب مدل (برای مثال: رگرسیون چند متغیره)
+model_fit <- train(TRVLCMIN ~ I(0.58357*TRPMILES) + I(0.58176*TRPMILAD) + I(0.53511*VMT_MILE) + I(0.3111*TIMETOWK) + I(0.23229*NOCONG) + I(0.2067*DISTTOWK17) + I(0.2067*GCDWORK) + I(0.20206*ENDTIME) + I(0.10891*STRTTIME), data = train_data, method = "lm", trControl = train_control)
+
+# نمایش اهمیت ویژگی‌ها در مدلی که قابلیت چنین کاری دارد (مانند جنگل تصادفی)
+importance_model <- varImp(model_fit, scale = FALSE)
+
+# ارزیابی مدل روی مجموعه داده تست
+predictions <- predict(model_fit, test_data)
+performance <- postResample(predictions, test_data$TRVLCMIN)
+
+# فرض می‌کنیم که شما مدل خود را به نام `model_fit` آموزش داده‌اید
+# و همچنین دارای دیتافریم تست `test_data` هستید.
+
+# انجام پیش‌بینی ها بر روی مجموعه‌ی داده‌های تست
+predictions <- predict(model_fit, newdata = test_data)
+
+# محاسبه معیار های دقت پیش‌بینی مدل
+postResample(pred = predictions, obs = test_data$TRVLCMIN)
+
+# نمایش MAE, RMSE, و R-squared
+MAE <- mean(abs(predictions - test_data$TRVLCMIN))
+RMSE <- sqrt(mean((predictions - test_data$TRVLCMIN)^2))
+R2 <- cor(predictions, test_data$TRVLCMIN)^2
+
+# چاپ نتایج
+cat("Mean Absolute Error (MAE): ", MAE, "\n")
+cat("Root Mean Squared Error (RMSE): ", RMSE, "\n")
+cat("R-squared: ", R2, "\n")
+```
+
+stepwise\
+روشی برای پیدا کردن پراهمیت ترین متغیرها
+
+```{r}
+modeling <- df
+# Set seed for reproducibility
+set.seed(123)
+# Set up repeated k-fold cross-validation
+train.control <- trainControl(method = "cv", number = 10)
+# Train the model
+step.model <- train(
+  TRVLCMIN ~ .,
+  data = modeling ,
+  method = "leapBackward",
+  tuneGrid = data.frame(nvmax = 1:9),
+  trControl = train.control)
+step.model$results
+# step.model$bestTune
+summary(step.model$finalModel)
+# best variable TRPMILES,TRPTRANS, STRTTIME, ENDTIME 
+#lm(TRVLCMIN ~ WHYFROM + TRPMILES + TRPTRANS + STRTTIME + ENDTIME + TDWKND ,data = modeling)
+
+```
+
+```{r}
+modeling <- df
+set.seed(123)  # برای تکرارپذیری
+index <- createDataPartition(modeling$TRVLCMIN, p = 0.8, list = FALSE)
+train_data <- modeling[index, ]
+test_data <- modeling[-index, ]
+
+# تعریف کنترل آموزش (برای کراس-ولیدیشن و جلوگیری از اورفیت)
+train_control <- trainControl(method = "cv", number = 10)
+
+# انتخاب مدل (برای مثال: رگرسیون چند متغیره)
+model_fit <- train(TRVLCMIN ~ WHYFROM + TRPMILES + TRPTRANS + STRTTIME + ENDTIME + TDWKND , data = train_data, method = "lm", trControl = train_control)
+
+# نمایش اهمیت ویژگی‌ها در مدلی که قابلیت چنین کاری دارد (مانند جنگل تصادفی)
+importance_model <- varImp(model_fit, scale = FALSE)
+
+# ارزیابی مدل روی مجموعه داده تست
+predictions <- predict(model_fit, test_data)
+performance <- postResample(predictions, test_data$TRVLCMIN)
+
+predictions <- predict(model_fit, newdata = test_data)
+
+# محاسبه معیار های دقت پیش‌بینی مدل
+postResample(pred = predictions, obs = test_data$TRVLCMIN)
+
+# نمایش MAE, RMSE, و R-squared
+MAE <- mean(abs(predictions - test_data$TRVLCMIN))
+RMSE <- sqrt(mean((predictions - test_data$TRVLCMIN)^2))
+R2 <- cor(predictions, test_data$TRVLCMIN)^2
+
+# چاپ نتایج
+cat("Mean Absolute Error (MAE): ", MAE, "\n")
+cat("Root Mean Squared Error (RMSE): ", RMSE, "\n")
+cat("R-squared: ", R2, "\n")
+```
+
+```{r}
+# فرضیه ضرایب مدل قبلی
+intercept <- 20.8292
+coefficients <- c(WHYFROM = -0.2924, TRPMILES = 0.1511, TRPTRANS = 0.2806, STRTTIME = -0.2030, ENDTIME = 0.2001, TDWKND = -1.5987)
+
+# تابعی برای محاسبه پیش‌بینی‌ها با استفاده از ضرایب داده شده
+predict_with_coefficients <- function(newdata, intercept, coefficients) {
+  # محاسبه پیش‌بینی‌ها از روی ضرایب ثابت
+  predictors <- as.matrix(cbind(1, newdata[, names(coefficients)]))
+  coefficients <- c(intercept, coefficients)
+  predictions <- predictors %*% coefficients
+  return(predictions)
+}
+
+# اجرای تابع پیش‌بینی‌گر بر روی مجموعه داده‌های تست
+predictions_manual <- predict_with_coefficients(test_data, intercept, coefficients)
+
+# محاسبه خطاهای پیش‌بینی و چاپ آن‌ها
+MAE_manual <- mean(abs(predictions_manual - test_data$TRVLCMIN))
+RMSE_manual <- sqrt(mean((predictions_manual - test_data$TRVLCMIN)^2))
+R2_manual <- cor(predictions_manual, test_data$TRVLCMIN)^2
+
+# چاپ نتایج
+cat("Manual Model - Mean Absolute Error (MAE): ", MAE_manual, "\n")
+cat("Manual Model - Root Mean Squared Error (RMSE): ", RMSE_manual, "\n")
+cat("Manual Model - R-squared: ", R2_manual, "\n")
+```
+
+حال استفاده میکنیم از ضرایبی که در بخش اول بدست اوردیم:\
+
+```{r}
+modeling <- df
+set.seed(123)  # برای تکرارپذیری
+index <- createDataPartition(modeling$TRVLCMIN, p = 0.8, list = FALSE)
+train_data <- modeling[index, ]
+test_data <- modeling[-index, ]
+train_control <- trainControl(method = "cv", number = 50)
+model_fit <- train(TRVLCMIN ~ I(0.58357*TRPMILES) + I(0.58176*TRPMILAD) + I(0.53511*VMT_MILE) + I(0.3111*TIMETOWK) + I(0.23229*NOCONG) + I(0.2067*DISTTOWK17) + I(0.2067*GCDWORK) + I(0.20206*ENDTIME) + I(0.10891*STRTTIME) , data = train_data, method = "lm", trControl = train_control)
+importance_model <- varImp(model_fit, scale = FALSE)
+predictions <- predict(model_fit, test_data)
+performance <- postResample(predictions, test_data$TRVLCMIN)
+predictions <- predict(model_fit, newdata = test_data)
+postResample(pred = predictions, obs = test_data$TRVLCMIN)
+MAE <- mean(abs(predictions - test_data$TRVLCMIN))
+RMSE <- sqrt(mean((predictions - test_data$TRVLCMIN)^2))
+R2 <- cor(predictions, test_data$TRVLCMIN)^2
+cat("Mean Absolute Error (MAE): ", MAE, "\n")
+cat("Root Mean Squared Error (RMSE): ", RMSE, "\n")
+cat("R-squared: ", R2, "\n")
+```
+
+همانطور که مشخص است، بهترین ضرایب همین ضرایب هستند و موجب افزایش دقت مدلسازی ما شدند
+
+\
+ساخت پلات ها
+
+```{r}
+library(ggplot2)
+
+# تبدیل ستون شغل به عامل
+df$occupation_group <- as.factor(df$occupation_group)
+
+# رسم نمودار
+ggplot(df, aes(x=occupation_group, y=TRVLCMIN)) +
+  geom_boxplot() +
+  labs(title="مقایسه زمان سفر بر اساس شغل", x="گروه شغلی", y="زمان سفر") +
+  theme_minimal()
+
+```
+
+```{r}
+# رسم نمودار میله ای
+g <- ggplot(df, aes(x=occupation_group, y=TRVLCMIN)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  labs(title="زمان سفر بر اساس شغل", x="گروه شغلی", 
+       y="زمان سفر بر حسب دقیقه") +
+  theme_minimal()
+g
+ggsave("my_plot7.png", plot = g, width = 10, height = 10)
+```
+
+```{r}
+library(ggplot2)
+
+# محاسبه میانگین زمان سفر برای هر گروه شغلی
+avg_travel_time <- aggregate(TRVLCMIN ~ occupation_group, df, mean)
+
+# رسم نمودار میله ای
+f <- ggplot(avg_travel_time, aes(x=occupation_group, y=TRVLCMIN)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  labs(title="میانگین زمان سفر بر اساس شغل", x="گروه شغلی", 
+       y=" میانگین زمان سفر بر حسب دقیقه") +
+  theme_minimal()
+f
+ggsave("my_plot6.png", plot = f, width = 10, height = 10)
+```
+
+```{r}
+library(ggplot2)
+
+# محاسبه میانگین زمان سفر برای هر گروه شغلی
+avg_travel_time <- aggregate(TRVLCMIN ~ occupation_group, df, mean)
+
+# محاسبه درصد هر گروه شغلی
+total_time <- sum(avg_travel_time$TRVLCMIN)
+avg_travel_time$percentage <- avg_travel_time$TRVLCMIN / total_time * 100
+
+# رسم نمودار میله ای
+p <- ggplot(avg_travel_time, aes(x=occupation_group, y=TRVLCMIN)) +
+  geom_bar(stat="identity", fill="steelblue") +
+  labs(title="میانگین زمان سفر بر اساس شغل", x="گروه شغلی", 
+       y="میانگین زمان سفر بر حسب دقیقه") +
+  theme_minimal()
+
+# اضافه کردن درصد به نمودار
+p + geom_text(aes(label=paste0(round(percentage, 1), "%")), vjust=-0.3)
+```
+
+```{r}
+library(ggplot2)
+
+# محاسبه میانگین زمان سفر و زمان سفر بدون ترافیک برای هر گروه شغلی
+avg_times <- df %>%
+  group_by(occupation_group) %>%
+  summarise(avg_TRVLCMIN = mean(TRVLCMIN, na.rm = TRUE),
+            avg_NOCONG = mean(NOCONG, na.rm = TRUE))
+
+# تبدیل داده به فرمت مناسب برای ggplot
+avg_times_long <- avg_times %>%
+  gather(key = "variable", value = "value", -occupation_group)
+
+# رسم نمودار میله ای
+e <- ggplot(avg_times_long, aes(x=occupation_group, y=value, fill=variable)) +
+  geom_bar(stat="identity", position="dodge") +
+  labs(title="میانگین زمان سفر و زمان سفر بدون ترافیک بر اساس شغل",
+       x="گروه شغلی", y="میانگین زمان (دقیقه)") +
+  scale_fill_discrete(name = "متغیر", labels = c("زمان سفر", "زمان سفر بدون ترافیک")) +
+  theme_minimal()
+e
+ggsave("my_plot5.png", plot = e, width = 10, height = 10)
+```
+
+```{r}
+library(ggplot2)
+
+# محاسبه میانگین زمان سفر برای هر نوع وسیله سفر و گروه شغلی
+avg_times <- df %>%
+  group_by(WRKTRANS, occupation_group) %>%
+  summarise(avg_TRVLCMIN = mean(TRVLCMIN, na.rm = TRUE))
+
+# رسم نمودار میله ای
+d <- ggplot(avg_times, aes(x=WRKTRANS, y=avg_TRVLCMIN, fill=occupation_group)) +
+  geom_bar(stat="identity", position="dodge") +
+  labs(title="میانگین زمان سفر بر اساس نوع وسیله سفر و شغل",
+       x="نوع وسیله سفر", y="میانگین زمان سفر (دقیقه)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+d
+ggsave("my_plot4.png", plot = d, width = 10, height = 10)
+```
+
+```{r}
+library(ggplot2)
+
+# رسم نمودار میله ای
+c <- ggplot(df, aes(x=WRKTRANS, y=TRVLCMIN, fill=occupation_group)) +
+  geom_bar(stat="identity", position="dodge") +
+  labs(title="زمان سفر بر اساس نوع وسیله سفر و شغل",
+       x="نوع وسیله سفر", y="زمان سفر (دقیقه)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+c
+ggsave("my_plot3.png", plot = c, width = 10, height = 10)
+```
+
+```{r}
+library(ggplot2)
+
+# محاسبه میانگین زمان سفر برای هر نوع وسیله سفر و گروه شغلی
+avg_times <- df %>%
+  group_by(WRKTRANS, occupation_group) %>%
+  summarise(avg_TRVLCMIN = mean(TRVLCMIN, na.rm = TRUE))
+
+# رسم نمودار میله ای
+p <- ggplot(avg_times, aes(x=WRKTRANS, y=avg_TRVLCMIN, fill=occupation_group)) +
+  geom_bar(stat="identity", position="dodge") +
+  labs(title="میانگین زمان سفر بر اساس نوع وسیله سفر و شغل",
+       x="نوع وسیله سفر", y="میانگین زمان سفر (دقیقه)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# اضافه کردن میانگین زمان سفر به بالای نمودار
+p + geom_text(aes(label=round(avg_TRVLCMIN, 1)), vjust=-0.3)
+
+# ذخیره نمودار به عنوان یک تصویر PNG با ابعاد 10x10 اینچ
+ggsave("my_plot.png", plot = p, width = 10, height = 10)
+
+```
+
+```{r}
+library(ggplot2)
+
+# محاسبه میانگین زمان سفر برای هر نوع وسیله سفر و گروه شغلی
+avg_times <- df %>%
+  group_by(WRKTRANS, occupation_group) %>%
+  summarise(avg_TRVLCMIN = mean(TRVLCMIN, na.rm = TRUE))
+
+# رسم نمودار میله ای
+b <- ggplot(avg_times, aes(x=occupation_group, y=avg_TRVLCMIN, fill=WRKTRANS)) +
+  geom_bar(stat="identity", position="dodge") +
+  labs(title="میانگین زمان سفر بر اساس شغل و نوع وسیله سفر",
+       x="گروه شغلی", y="میانگین زمان سفر (دقیقه)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+b
+ggsave("new_plot2.png", plot = b, width = 10, height = 10)
+```
+
+```{r}
+library(ggplot2)
+
+# رسم نمودار میله ای
+a <- ggplot(df, aes(x=occupation_group, y=TRVLCMIN, fill=WRKTRANS)) +
+  geom_bar(stat="identity", position="dodge") +
+  labs(title="زمان سفر بر اساس شغل و نوع وسیله سفر",
+       x="گروه شغلی", y="زمان سفر (دقیقه)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+a
+ggsave("new_plot.png", plot = a, width = 10, height = 10)
+```
+
+```{r}
+library(ggplot2)
+
+# رسم نمودار میله ای
+h <- ggplot(df, aes(x=WRKTRANS, y=TRPMILES, fill=occupation_group)) +
+  geom_bar(stat="identity", position="dodge") +
+  labs(title="مسافت سفر بر اساس نوع وسیله سفر و شغل",
+       x="نوع وسیله سفر", y="مسافت سفر (مایل)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+h
+ggsave("my_plot8.png", plot = h, width = 10, height = 10)
+
+```
+
+ساخت جداول
+
+```{r}
+gender_table <- df %>%
+  group_by(R_SEX.x) %>%
+  summarise(n = n()) %>%
+  mutate(Percentage = n / sum(n) * 100)
+
+HHFAMINC_table <- df %>%
+  group_by(HHFAMINC.x) %>%
+  summarise(n = n()) %>%
+  mutate(Percentage = n / sum(n) * 100)
+
+OCCAT_table <- df %>%
+  group_by(OCCAT) %>%
+  summarise(n = n()) %>%
+  mutate(Percentage = n / sum(n) * 100)
+
+WRKTRANS_table <- df %>%
+  group_by(WRKTRANS) %>%
+  summarise(n = n()) %>%
+  mutate(Percentage = n / sum(n) * 100)
+
+ft <- flextable(gender_table)
+save_as_docx(ft, path = "gender_table.docx")
+ft2 <- flextable(HHFAMINC_table)
+save_as_docx(ft2, path = "HHFAMINC_table.docx")
+ft3 <- flextable(OCCAT_table)
+save_as_docx(ft3, path = "OCCAT_table.docx")
+ft4 <- flextable(WRKTRANS_table)
+save_as_docx(ft4, path = "WRKTRANS_table.docx")
+```
